@@ -16,6 +16,7 @@ type TokenSource interface {
 // ReuseTokenSource returns a TokenSource which repeatedly returns the
 // same token as long as it's valid, starting with t.
 // When its cached token is invalid, a new token is obtained from src.
+// oauth2.TokenSource should be seeded with ctx
 func ReuseTokenSource(ctx ctxref.ContextReference, t *oauth2.Token, src oauth2.TokenSource) TokenSource {
 	return &reuseTokenSource{
 		ctx: ctx,
