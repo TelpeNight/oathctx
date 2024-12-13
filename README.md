@@ -112,7 +112,7 @@ Concurrent access to ctx while calling to `Use` or `Unuse` may cause serious pro
 It seems that all supported modules are safe-for-use in this manner.
 All them use `golang.org/x/oauth2/internal.RetrieveToken`.
 Which does `ContextClient(ctx).Do(req.WithContext(ctx))`.
-I don't expect any issues with std library after all calls return.
+I don't expect any issues with std library after all calls ahve returned.
 You may want to check custom `ContextClient` if you, your platform or tools use one.
 
 But if you'll encounter ctxref leaking - please fire an issue.
