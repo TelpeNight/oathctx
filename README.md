@@ -16,7 +16,7 @@ And that is it. Any existing TokenSource that holds internal Context may be used
 
 The next "a-ha" moment is that we can reuse any existing ouath2 client with oauth2.StaticTokenSource. Just obtain token with TokenContext method. Then use basic implementation with StaticTokenSource. No need to dive in implementation details. 
 
-Currently, module provides context-aware implementation of http.RoundTripper and grpc.PerRPCCredentials. Feel free to pull new ones.
+Currently, module provides context-aware implementation of http.RoundTripper and grpc.PerRPCCredentials. Feel free to pull request new ones.
 
 ## Code examples
 
