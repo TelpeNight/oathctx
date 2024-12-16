@@ -1,4 +1,4 @@
-# oathctx
+# oauthctx
 
 ---
 
@@ -6,61 +6,50 @@ This module is used to bypass golang oauth2 package token source limitations: ht
 
 At current moment, we can't pass a request context to an oauth request, so it doesn't respect deadlines and values.
 
-The main idea is using ctxref/ContextReference, which lets caller of TokenSource to switch internal ctx before calling Token() method.
-
 This package reimplements only small subset of functionality and should play well with any library.
 
-The main strategy is to convert oauth2.TokenSource to oauthctx.TokenSource via ReuseTokenSource method. Then we should switch to context-aware implementation of TokenSource caller.
+The goal of this package is not to reimplement oauth2 details, but focus on interfaces. So we are trying to reuse existing
+implementation as much as possible.
 
-And that is it. Any existing TokenSource that holds internal Context may be used in this way. (See [Thread safety](#thread-safety-notes) for current limitations)
+The algorithm is the following:
 
-The next "a-ha" moment is that we can reuse any existing ouath2 client with oauth2.StaticTokenSource. Just obtain token with TokenContext method. Then use basic implementation with StaticTokenSource. No need to dive in implementation details. 
+1. Wrap existing functionality into `TokenSource` implementation.
+This may come in to different flavours:
 
-Currently, module provides context-aware implementation of http.RoundTripper and grpc.PerRPCCredentials. Feel free to pull new ones.
+    * 'Immutable' token sources. They don't have any mutable inner state. These sources can be converted as simple as following:
+        ```go
+        src := c.new.TokenSource(ctx)
+        return src.Token()
+        ```
+      See [convert.go](convert.go) and [clientcredentials.go](clientcredentials.go) for the reference.
+      Package also provides generic purpose `ConvertImmutable` and `NewOauth2TokenSource` to simplify this.
+   
+    * 'Mutable' token sources, such as `oauth2.tokenRefresher`. They have inner state, that can be updated on any call.
+      To mimic this behavior we need some extra work. See [config.go](config.go)
+
+2. Then wrap new `oauthctx.TokenSource` with `oauthctx.ReuseTokenSource`. It will refresh expired token.
+   Also it provides Context-aware synchronisation.
+
+3. oauth2.HTTPClient and similar functionality is provided by Options. Using Context to achieve this is sooo messy.
+   To be closer to original functionality, http.client which was provided on construction has higher priority over http.client
+   from request's context (if there is one). But in general, you can provide per-call ctx with custom client and other values. 
+   This behavior is different from the original library.
+
+And that is it. Any existing `TokenSource` that holds internal `Context` may be used in this way.
+
+The next "a-ha" moment is that we can reuse any other module, which depends on `ouath2`, using `oauth2.StaticTokenSource`.
+Just obtain token with `TokenContext` method. Then use existing implementation with `StaticTokenSource`.
+No need to dive in implementation details.
+See [transport.go](transport.go) and [grpc/credentials.go](grpc/credentials.go) for the reference.
+
+Currently, module provides context-aware implementation of `http.RoundTripper` and `grpc.PerRPCCredentials`. Feel free to pull request new ones.
 
 ## Code examples
 
 ---
 
 ```go
-// OAuth transport
-package main
-import (
-    "golang.org/x/oauth2"
-    "golang.org/x/oauth2/clientcredentials"
-
-    "github.com/TelpeNight/oauthctx"
-    "github.com/TelpeNight/oauthctx/ctxref"
-)
-
-
-ctx := ctxref.Background()
-
-// can be used as ordinary context:
-transportCtx := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
-    Transport: unwrapTokenTransport,
-})
-
-var config clientcredentials.Config = ...
-transport = &oauthctx.Transport{
-    // note ctx is passed to ReuseTokenSource, and its child to TokenSource
-    Source: oauthctx.ReuseTokenSource(ctx, nil, config.TokenSource(transportCtx)),
-}
-
-client := &http.Client{
-    Transport:  transport,
-}
-
----
-
-reqCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-defer cancel()
-req := http.NewRequestWithContext(reqCtx, ...)
-client.Do(req) // <- oauth call will respect timeout
-```
-
-```go
-// GRPC
+// grpc
 package main
 import (
     "golang.org/x/oauth2"
@@ -69,19 +58,19 @@ import (
     gcred "google.golang.org/grpc/credentials/google"
 
     "github.com/TelpeNight/oauthctx"
-    "github.com/TelpeNight/oauthctx/ctxref"
     grpcctx "github.com/TelpeNight/oauthctx/grpc"
 )
 
-ctx := ctxref.Background()
+var conf = oauthctx.NewConfig(&oauth2.Config{
+    //...
+})
+var refreshToken string = "..."
 
-var conf = &oauth2.Config{
-    ...
-}
-var refreshToken string = ...
-
-classicSrc := conf.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
-ts := oauthctx.ReuseTokenSource(ctx, nil, classicSrc)
+ts := conf.TokenSource(
+	&oauth2.Token{RefreshToken: refreshToken},
+	// custom http.Client can be provided with option
+	oauthctx.TokenSourceWithClient(...))
+ts = oauthctx.ReuseTokenSource(nil, ts)
 
 var bundle credentials.Bundle = gcred.NewDefaultCredentialsWithOptions(
     gcred.DefaultCredentialsOptions{
@@ -92,27 +81,4 @@ var bundle credentials.Bundle = gcred.NewDefaultCredentialsWithOptions(
 )
 
 // use bundle to create a client. methods' context will be passed to oauth2, so overall call will respect timeouts
-
 ```
-
-
-## Thread safety notes
-
----
-
-By default `ctxref.ContextReference` is not thread safe and is guarded by `ReuseTokenSource`.
-If you need thread safe version - consider making a pull request. But keep in mind, that synchronisation should respect ctx's timeouts.
-See `ReuseTokenSource` for a reference. Trivial Mutex implementations won't be accepted.
-
-After calling `ctx.Use(other)` ctx becomes a "perfect forwarder" to other context. 
-At the moment of calling to `ctx.Unuse()` ctx should not be accessed by any concurrent goroutine.
-So, underling implementation should not retain context by any means other than storing it inside `oauth2.TokenSource`.
-Concurrent access to ctx while calling to `Use` or `Unuse` may cause serious problem!  
-
-It seems that all supported modules are safe-for-use in this manner.
-All them use `golang.org/x/oauth2/internal.RetrieveToken`.
-Which does `ContextClient(ctx).Do(req.WithContext(ctx))`.
-I don't expect any issues with std library after all calls return.
-You may want to check custom `ContextClient` if you, your platform or tools use one.
-
-But if you'll encounter ctxref leaking - please fire an issue.
