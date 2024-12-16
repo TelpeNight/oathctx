@@ -2,23 +2,38 @@ package oauthctx
 
 import (
 	"net/http"
-
-	"golang.org/x/oauth2"
-
-	"github.com/TelpeNight/oauthctx/ctxref"
 )
 
-// NewClient creates an *http.Client from a Context and oauth2.TokenSource.
-// The returned client is not valid beyond the lifetime of the context.
-// oauth2.TokenSource should be seeded with ctx.
-//
-//	ctx := ctxref.Background()
-//	transportCtx := context.WithValue(ctx, oauth2.HTTPClient, customTokenClient)
-//	oauthClient := oauthctx.NewClient(ctx, tokenSource.TokenSource(transportCtx))
-func NewClient(ctx ctxref.ContextReference, src oauth2.TokenSource) *http.Client {
+// NewClient creates an *http.Client from TokenSource.
+func NewClient(src TokenSource, ops ...ClientOp) *http.Client {
+	var options clientOp
+	for _, op := range ops {
+		op(&options)
+	}
+	if options.client == nil {
+		options.client = http.DefaultClient
+	}
+	if src == nil {
+		// to match original behaviour
+		return options.client
+	}
 	return &http.Client{
 		Transport: &Transport{
-			Source: ReuseTokenSource(ctx, nil, src),
+			Source: ReuseTokenSource(nil, src),
+			Base:   options.client.Transport,
 		},
 	}
+}
+
+// ClientWithRequestClient sets transport, that will be used after obtaining token to make a real request
+func ClientWithRequestClient(client *http.Client) ClientOp {
+	return func(o *clientOp) {
+		o.client = client
+	}
+}
+
+type ClientOp func(o *clientOp)
+
+type clientOp struct {
+	client *http.Client
 }
